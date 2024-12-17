@@ -18,7 +18,7 @@ This documentation provides an overview of `ent`, a *C-inspired low level progra
  3. [Variables](#variables)
     1. [Global Variables](#global-variables)
        1. [Definition](#global-variable-definitions)
-       2. [Definition with Default Value](#global-variable-definitions-with-initialiser-value)
+       2. [Definition with Default Value](#global-variable-definitions-with-initializer-value)
        3. [Declaration of External Variable](#external-global-variables)
     2. [Local Variables](#local-variables)
     4. [Passing Variables into Functions](#passing-variables-into-functions)
@@ -62,12 +62,12 @@ In the `ent` language, functions are defined using an explicit syntax which allo
 
 ### Function Definition
 
-    Function declaration
+ Function declaration
 ```rust
 fn functionName(type1 arg1, type2 arg2) -> returnType;
 ```
 
-    Function definition
+ Function definition
 ```rust
 fn functionName(type1 arg1, type2 arg2) -> returnType {
     // function body
@@ -81,7 +81,7 @@ If the compile-time evaluated type of the expression does not match the given re
 
 ### Core Global Variables
 
-Global variables are variables defined outside of a scope of a function. They are statically embeded into the binary (increasing its size) and available either default initialised to some value or to zero. All string literals used, even inside of functions will be evaluated into a global variable and the use of it replaced with a pointer to the string's first byte.
+Global variables are variables defined outside of a scope of a function. They are statically embeded into the binary (increasing its size) and available either default initialized to some value or to zero. All string literals used, even inside of functions will be evaluated into a global variable and the use of it replaced with a pointer to the string's first byte.
 More information about global variables can be read in the section [global variables](#global-variables)
 
 ### Name Mangeling
@@ -99,6 +99,7 @@ The `ent` language uses a very basic form of name mangeling, designed to balance
 | word, sword    | w, W   |
 | dword, sdword  | d, D   |
 | qword, sqword  | q, Q   |
+| single, double | f, F   |
 | struct         | s      |
 
 Pointers and arrays have special handling, where for each layer of a pointer a single `p` is appended before the type, and if type is an array, an `a` followed by the array size is appended before the type.
@@ -106,12 +107,12 @@ Pointers and arrays have special handling, where for each layer of a pointer a s
 #### Example Name Mangeling
 
 ```rust
-fn exampleFunction(dword** a, struct mystruct* b, sqword c, byte d[5]) -> sdword;
+fn example_function(dword** a, struct mystruct* b, sqword c, byte d[5]) -> sdword;
 ```
 ->
 
 ```
-exampleFunction__ppd__ps__Q__a5b___D
+example_function__ppd__ps__Q__a5b___D
 ```
 
 ```rust
@@ -129,5 +130,285 @@ As global variables do not use name mangeling, the `extern` keyword has a differ
 Both function declarations and definitions can be prefixed by `extern` to disable name mangeling, for both externally defined functions which code will call into and defining non-name-mangeled functions.
 
 ## Preprocessor
+
+The `ent` language provides a preprocessor phase similar to C, but with a more streamlined syntax. Preprocessor directives allow you to define constants, conditionally compile code, include external files, and embed binary data directly into the compiled binary.
+Another important syntax difference is that in `ent` preprocessor directives do not begin with a `#` like in C.
+Preprocessor directives, if placed into the header block will be preprocessor copied and evaluated upon inclusion.
+
+### Core Preprocessor syntax
+
+Preprocessor directive can only be used in top-level scope, with the exception of those prefixed with an @, which can be used anywhere. The preprocessor directive takes up the entire line and no code is allowed to follow it (comments may).
+In `ent`, the main preprocessor directives are as follows:
+
+- `include <filename>`: includes the header block of the specified file, relative to the root of the project or libraries.
+- `include "filename"`: includes the header block of the specified file, relative to the current file's location.
+- `define`: a compile time constant which can be assigned a name and a value. They can be used in preprocessor conditional statements or copy pasted by the preprocessor if used in code.
+- conditional statements prefixed with a `@`
+    - `@if condition`: evaluates the condition on compiletime, using defined preprocessor constants and comparison operators: == < > <= >= !=
+    - `@ifdef`: passes true if the given symbol is a valid preprocessor constant, false if not.
+    - `@elif condition` evaluates the condition on compiletime, only if the if condition above failed. Has to be placed logicially under a if or elif statement.
+    - `@else`: only if the if right above failed, the else will be enabled.
+    - `@endif`: ends the conditional block above.
+- `embed "filename" variablename`: embeds the given file into .rodata section and creates a global variable of type `byte**` which is default initialized to point to the start of the embeded data.
+
+### Defines and Constants
+
+The `define` preprocessor directive allowes the programmer to create symbolic constants that the preprocessor replaces at compile time. This is usefull for values that may vary by platform or environment, and for setting feature flags or toggling functionality without altering runtime behaviour. They can also be evaluated on compile time using preprocessor conditional statement allowing for more fine grained control.
+```rust
+define DEBUG_MODE 1 
+define PI 3.14159
+
+fn circle_area(dword radius) -> double {
+@ifdef DEBUG_MODE
+    radius.print();
+@endif
+    double r = (double)radius;
+    return PI * r * r;
+}
+```
+
+### Header Blocks
+
+In `ent`, the separation of header files and translation units. Instead, each translation unit can define a header block, which defines what the translation unit exposes. This is then preprocessor copied upon being `include`ed by the preprocessor from another translation unit.
+The header block contains declarations, such as structs, function declarations, typedefs and external global variables that can be shared across files.
+The header block, unlike preprocessor directives follows a whitespace independent scheme where symbols are use to specify its beggining and end.
+
+
+```rust
+// config.e
+header { // code can be placed here
+    typedef dword config_t;
+    struct config {
+        config_t settings_a,
+        config_t settings_b
+    };
+    fn load_config() -> struct config;
+    extern struct config g_config;
+/* code can be placed here */ }
+
+// main.e
+include "config.e"
+
+fn main() -> dword {
+    struct config cfg = load_config;
+    g_config->settings_a = cfg->settings_a;
+    config_t b = cfg->settings_b;
+}
+```
+
+In this example, the `config.e` file contains a `header {}` block (exposing `struct config`, `config_t`, `load_config` and `g_config`) and the actually function and variable definition. When `include "config.e"` is processed, only the `header {}` block is imported, ensuring the main file knows about all the given declarations.
+
+### Preprocessor Conditions
+
+Similar to C, `ent`'s preprocessor allows conditional compilation using the `@if`, `@elif`, `@else`, `@endif` and `@ifdef` preprocessor directives. These directives evaluate compile timed defined constants and when the conditions are met the enclosed code is compiled; otherwise it is skipped.
+
+```rust
+@ifdef DEBUG_MODE
+fn debug_log(byte* msg) -> void {
+    printf("[DEBUG]: %s\n", msg);
+}
+@else
+fn debug_log(byte* msg) -> void {
+    // Release mode: do nothing or log to file
+}
+@endif
+```
+
+This mechanism allows building the same codebase in multiple configurations (e.g., debug vs. release or architecture specific) without manually editing code segments.
+
+### File Embeding 
+
+The `embed` directive allows programmers to simply embed resources such as but not limited to; images, textures, audio, dynamically loaded modules or other binary files. 
+When a valid `embed` directive is being proecessed, the preprocessor reads the binary files and places it into the .rodata section of the binary output. Then, a variable of type `byte**` and name specified as the third argument of the `embed` directive is created and default initialized with the address of the binary file's start in the .rodata section.
+The second argument of the `embed` directive is a `"` enclose filename of the resource, **relative to the project root**.
+
+```rust
+embed "data.bin" data_array // this creates a `byte** data_array;`
+
+fn process_data() -> void {
+    printf("%s\n" *data_array); // print the data as if it was a string
+}
+```
+
+## Variables 
+
+Variables in `ent` hold data that can be manipulated during program execution. There are several types of variables based on scope and lifecycle: global variables, local variables, and external variables.
+
+### Global Variables
+
+Global variables are declared outside any function, making them accessible from any part of the program after their declaration. They are also visible as link-time symbols so they can be used externally.
+
+#### Global Variable Definitions 
+
+To define a global variable, you specify the type followed by the variable name outside of any function body.
+
+```
+dword global_variable;
+dword* global_variable_pointer;
+byte global_variable_array[20];
+struct mystruct global_variable_struct;
+```
+
+#### Global Variable Definitions with Initializer Value
+
+Global variables can be initialized with a value at the time of definition. This value must be a constant expression since it is evaluated at compile time and statically embeded into the binary, available to use immediately on program start.
+
+```
+dword global_variable = 278;
+byte* global_string = "Hello World\n";
+byte global_variable_array[5] = {0, 1, 2, 3 , 4};
+struct mystruct global_variable_struct = {.a = 2, .b = 892934, .c = "Hello World\n"};
+```
+
+#### External Global variables
+
+The `extern` keyword is used to declare a global variable that is defined in another file or module. This is especially useful header blocks to allow other translation units to access global variables defined in one, or to interface with foreign global variables.
+
+```
+extern dword external_global_variable;
+extern byte* external_string;
+extern byte externally_defined_array[8];
+extern struct mystruct externally_defined_global_struct;
+```
+
+### Local Variables 
+
+Local variables are declared within a function and can only be accessed within that function's scope. They are created when the function is called and destroyed when it returns. Local variables are also scoped inside of other blocks, such as the body of `if/else`, `switch` and loops.
+
+```rust
+fn example_function() -> void {
+    dword localVar = 5;
+    // code that uses localVar
+}
+```
+
+#### Passing Variables into Functions 
+
+When passing variables into functions, `ent` uses a pass-by-value by default, meaning each function gets a copy of each of the arguments. If the function needs to modify the original, it can explicitly take a pointer to a variable. More on [pointers](#pointers).
+
+```rust
+fn pass_by_value(dword a) -> dword {
+    a += 10; // original a value does not change
+    return a;
+}
+```
+```rust
+fn pass_by_reference(dword* a) -> void {
+    *a += 10; // original value does change
+}
+```
+
+#### Function Return Values 
+
+Functions in `ent` can return values. If a function is supposed to return a value, this must be explicitly mentioned in the function signature with a `->` followed by the type of the return value instead of `void`. The return value can either by used by caller or discarded.
+
+```rust
+fn increment(dword value) -> dword {
+    return value + 1;
+}
+```
+
+## Control Flow
+
+`ent` supports various control flow constructs that allow for dynamic reactions to events that occur in the program.
+
+### If-Else Statements 
+
+`If-Else` statements are used to execute code conditionally. Blocks are defined using braces.
+
+```rust
+fn check_value(dword value) -> void {
+    if (value > 10) {
+        printf("Value is greater than 10.\n");
+    } else {
+        printf("Value is 10 or less.\n");
+    }
+}
+```
+
+### Switch Statements 
+
+`Switch` statements provide a method of executing code based on the value of an expression.
+
+```rust
+fn evaluate(dword value) -> void {
+    switch (value) {
+        case (1) {
+            printf("One\n");
+        }
+        case (2) {
+            printf("Two\n");
+        }
+        case (3, 4, 5, 6) {
+            printf("3 <= value <= 6\n");
+        }
+        default {
+            printf("Other\n");
+        }
+    }
+}
+```
+
+### Loops
+
+`ent` supports `while`, `for` and `times` loops for repeated and conditionally repeated code execution.
+
+#### While Loops
+
+Executes the block as long as the condition is true.
+
+```rust
+fn count_to_ten() -> void {
+    dword count = 1;
+    while (count <= 10) {
+        printf("%d ", count);
+        count++;
+    }
+}
+```
+
+#### For Loops 
+
+Used for more advanced looping with fine-grained control over the initializer, condition and step. Like in C they are made out of three main parts, the initializer, the condition and the step.
+
+```rust
+fn count_to_ten() -> void {
+    for (dword i = 1; i <= 10; i++) {
+        printf("%d ", i);
+    }
+}
+```
+
+#### Times Loops 
+
+A simplified loop construct unique to `ent`, executing a block a specific number of times, with an optionally exposed index. The basic syntax without an index is:
+
+```rust
+fn print_ten_times() -> void {
+    times (10) {
+        printf("ding!\n");
+    }
+}
+```
+
+And with an exposed index, the index vairbale name and type is user specified, as long as the type is integral (not a pointer, and not a struct)
+
+```rust
+fn count_to_ten() -> void {
+    times (10 : dword number) {
+        printf("%d ", number);
+    }
+}
+```
+
+> Note the difference of this example from the while and for example, where using the `times` loop always starts with index 1 and end on N inclusively.
+
+### Calling Function
+
+Another important change of control flow can be achived by calling functions. This can be done in two main ways; classical calls and [UFCS](#UFCS)
+A classical function call can be achived using the syntax `functionName(argument1, argument2 ...)` and can be used either as a standalone expression discarding its return value (if not void) or as a part of an expression where its return value can be operated on and used as arguments for more functions.
+When a function call is starting to be evaluated, both standalone and inside an expression, cpu control immediately jumps to the function passing arguments in the way specified in [passing variables to functions](#passing-variables-into-functions).
+
+## Pointers
 
 
